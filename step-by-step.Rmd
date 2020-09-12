@@ -1,0 +1,120 @@
+---
+title: "Quantitative Approach Applied to Client Churning"
+author: "Emanuele Artioli"
+date: "7/7/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+```
+
+## Ingestion
+
+```{r ingestion, include=FALSE}
+fidelity <- read.csv("data/raw_1_cli_fid.csv", sep = ";")
+head(fidelity)
+accounts <- read.csv("data/raw_2_cli_account.csv", sep = ";")
+head(accounts)
+addresses <- read.csv("data/raw_3_cli_address.csv", sep = ";")
+head(addresses)
+privacy <- read.csv("data/raw_4_cli_privacy.csv", sep = ";")
+head(privacy)
+campaigns <- read.csv("data/raw_5_camp_cat.csv", sep = ";")
+head(campaigns)
+events <- read.csv("data/raw_6_camp_event.csv", sep = ";")
+head(events)
+transactions <- read.csv("data/raw_7_tic.csv", sep = ";")
+head(transactions)
+```
+## Format Check
+
+```{r formats}
+transactions$IMPORTO_LORDO <- gsub(",", ".", transactions$IMPORTO_LORDO) %>% as.numeric()
+transactions$SCONTO <- gsub(",", ".", transactions$SCONTO) %>% as.numeric()
+transactions$DATETIME <- transactions$DATETIME %>% as.Date()
+```
+
+## Active Customers
+
+```{r inactives}
+actives <- fidelity[fidelity$STATUS_FID == 1, "ID_CLI"]
+```
+
+##  Customer Base Grouping
+
+```{r grouping1}
+actives.grouped <- transactions[transactions$ID_CLI %in% actives, ] %>% group_by(ID_CLI) %>% summarise(
+  RECENCY <- max(DATETIME),
+  FREQUENCY <- n(),
+  MONETARY_VALUE <- sum(IMPORTO_LORDO),
+  DISCOUNT <- sum(SCONTO)
+)
+
+rfm <- data.frame("ID_CLI" = actives.grouped$ID_CLI, 
+                  "recency" = actives.grouped$`RECENCY <- max(DATETIME)`, 
+                  "frequency" = actives.grouped$`FREQUENCY <- n()`, 
+                  "mon.value" = actives.grouped$`MONETARY_VALUE <- sum(IMPORTO_LORDO)` - actives.grouped$`DISCOUNT <- sum(SCONTO)`)
+summary(rfm)
+```
+
+```{r grouping2}
+subranges <- function(x, stop1, stop2) {
+  if(x < stop1) return("LOW")
+  if(x < stop2) return("MEDIUM")
+  return("HIGH")
+}
+rfm$recency <- apply(as.matrix(rfm$recency), 1, subranges,  # setting as.matrix() to avoid compiling error
+                     stop1 = quantile(rfm$recency, .33, type = 1),
+                     stop2 = quantile(rfm$recency, .67, type = 1)) %>% factor(levels = c("LOW", "MEDIUM", "HIGH"), ordered = TRUE) # high recency is desirable
+rfm$frequency <- apply(as.matrix(rfm$frequency), 1, subranges,
+                     stop1 = quantile(rfm$frequency, .33, type = 1),
+                     stop2 = quantile(rfm$frequency, .67, type = 1)) %>% factor(levels = c("LOW", "MEDIUM", "HIGH"), ordered = TRUE)
+rfm$mon.value <- apply(as.matrix(rfm$mon.value), 1, subranges,
+                     stop1 = quantile(rfm$mon.value, .33, type = 1),
+                     stop2 = quantile(rfm$mon.value, .67, type = 1)) %>% factor(levels = c("LOW", "MEDIUM", "HIGH"), ordered = TRUE)
+
+loyalty <- function(x) {
+  x <- as.matrix(x)
+  if(x[2] == "HIGH") { # setting x as a matrix to avoid "Error in if (x$frequency == "HIGH") { : argument is of length zero"
+    if(x[3] != "LOW") return("TOP")
+    else return("LEAVING-TOP")
+  }
+  if(x[2] == "MEDIUM") {
+    if(x[3] != "LOW") return("ENGAGED")
+    else return("LEAVING")
+  }
+  if(x[3] != "LOW") return("ONE-TIMER")
+  else return("LEAVING")
+}
+
+rfm$loyalty <- apply(rfm, 1, loyalty) %>% factor(levels = c("ONE-TIMER", "LEAVING", "ENGAGED", "LEAVING-TOP", "TOP"), ordered = TRUE)
+
+rfm.class <- function(x) {
+  x <- as.matrix(x)
+  if(x[4] == "HIGH") {
+    if(x[5] == "TOP") return("DIAMOND")
+    if(x[5] == "LEAVING-TOP") return("GOLD")
+    if(x[5] == "ENGAGED") return("SILVER")
+    if(x[5] == "LEAVING") return("BRONZE")
+    else return("COPPER")
+  }
+  if(x[4] == "MEDIUM") {
+    if(x[5] == "TOP") return("GOLD")
+    if(x[5] == "LEAVING-TOP") return("SILVER")
+    if(x[5] == "ENGAGED") return("BRONZE")
+    if(x[5] == "LEAVING") return("COPPER")
+    else return("TIN")
+  }
+  if(x[5] == "TOP") return("SILVER")
+  if(x[5] == "LEAVING-TOP") return("BRONZE")
+  if(x[5] == "ENGAGED") return("COPPER")
+  if(x[5] == "LEAVING") return("TIN")
+  else return("CHEAP")
+}
+
+rfm$class <- apply(rfm, 1, rfm.class) %>% factor(levels = c("CHEAP", "TIN", "COPPER", "BRONZE", "SILVER", "GOLD", "DIAMOND"), ordered = TRUE)
+
+summary(rfm)
+```
